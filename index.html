@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPress JSON 批量导入</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+        }
+        h2 {
+            color: #333;
+        }
+        label {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        input, textarea, button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0 20px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+        textarea {
+            resize: vertical;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        p#status {
+            font-weight: bold;
+            font-size: 16px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>WordPress 文章批量导入</h2>
+        </div>
+        <label for="wpUrl">WordPress 主页地址：</label>
+        <input type="text" id="wpUrl" placeholder="https://wp地址/">
+        
+        <label for="wpUsername">WordPress 用户名：</label>
+        <input type="text" id="wpUsername" placeholder="输入 WordPress 用户名">
+        
+        <label for="wpPassword">WordPress 应用程序密码：</label>
+        <input type="password" id="wpPassword" placeholder="输入 WordPress 应用程序密码(User -> Profile -> Application Passwords)">
+        
+        <label for="jsonData">JSON 数据：</label>
+        <textarea id="jsonData" rows="10" placeholder='[{ title, desc, resource, vassal}]'></textarea>
+        
+        <button onclick="importPosts()">导入文章</button>
+        
+        <p id="status"></p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        function clearTags(title) {
+            return title.replace(/\[.*\]/,"");
+        }
+        function contentBuilder(post) {
+            return marked.parse(`${post.desc ?? ''}\n\n${post.resource ?? ''}\n\n${post?.vassal ?? ''}`);
+        }
+
+        // 检查文章是否已经存在
+        async function postExists(wpUrl, title, username, password) {
+            try {
+                const response = await fetch(`${wpUrl}/wp-json/wp/v2/posts?search=${encodeURIComponent(clearTags(title))}`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': 'Basic ' + btoa(username + ':' + password)
+                    }
+                });
+                const posts = await response.json();
+                return posts.length > 0 ? posts[0] : null;
+            } catch (error) {
+                console.error("检查文章是否存在时出错", error);
+                return null;
+            }
+        }
+   
+        // 创建新的文章
+        async function createPost(wpUrl, post, username, password) {
+            const contentHtml = marked.parse(contentBuilder(post));
+            
+            try {
+                const response = await fetch(`${wpUrl}/wp-json/wp/v2/posts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + btoa(username + ':' + password)
+                    },
+                    body: JSON.stringify({
+                        title: post.title,
+                        content: contentHtml,
+                        status: 'publish'
+                    })
+                });
+
+                const result = await response.json();
+                console.log(result);
+            } catch (error) {
+                console.error("文章导入失败", error);
+            }
+        }
+
+        // 更新现有文章
+        async function updatePost(wpUrl, postId, post, username, password) {
+            const contentHtml = marked.parse(contentBuilder(post));
+            
+            try {
+                const response = await fetch(`${wpUrl}/wp-json/wp/v2/posts/${postId}`, {
+                    method: 'POST',  
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + btoa(username + ':' + password)
+                    },
+                    body: JSON.stringify({
+                        title: post.title,
+                        content: contentHtml,
+                        status: 'publish'
+                    })
+                });
+
+                const result = await response.json();
+                console.log(result);
+            } catch (error) {
+                console.error("文章更新失败", error);
+            }
+        }
+
+        async function importPosts() {
+            const wpUrl = document.getElementById('wpUrl').value;
+            const wpUsername = document.getElementById('wpUsername').value;
+            const wpPassword = document.getElementById('wpPassword').value;
+            const jsonData = document.getElementById('jsonData').value;
+            const statusElement = document.getElementById('status');
+            
+            if (!wpUsername || !wpPassword) {
+                statusElement.innerText = "请输入 WordPress 用户名和密码";
+                return;
+            }
+
+            try {
+                const posts = JSON.parse(jsonData);
+                if (!Array.isArray(posts)) {
+                    statusElement.innerText = "JSON 数据格式错误，必须是数组";
+                    return;
+                }
+
+                statusElement.innerText = "开始导入文章...";
+
+                for (const post of posts) {
+                    if (!post.title || post?.type === 'script') {
+                        continue;
+                    }
+
+                    // 检查文章是否已经存在
+                    const existingPost = await postExists(wpUrl, post.title, wpUsername, wpPassword);
+                    
+                    if (existingPost) {
+                        console.log(`文章 "${post.title}" 已存在，正在更新`);
+                        await updatePost(wpUrl, existingPost.id, post, wpUsername, wpPassword);
+                    } else {
+                        console.log(`文章 "${post.title}" 不存在，正在创建`);
+                        await createPost(wpUrl, post, wpUsername, wpPassword);
+                    }
+
+                    // 更新进度
+                    statusElement.innerText = `正在处理: ${post.title}...`;
+                }
+
+                statusElement.innerText = "文章导入完成！";
+            } catch (error) {
+                console.error(error);
+                statusElement.innerText = "导入失败，请检查 JSON 格式或 WordPress 配置";
+            }
+        }
+    </script>
+</body>
+</html>
